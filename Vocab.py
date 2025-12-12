@@ -12,7 +12,14 @@ class SimpleVocab:
         counter = Counter()
         with open(filepath, 'r', encoding='utf-8') as f:
             for line in f:
-                words = line.strip().split()
+                newl = ''
+                for c in line:
+                    if c.isalnum() or c.isspace():
+                        newl += c
+                    elif c in ".,?":
+                        newl += ' ' + c + ' '
+
+                words = newl.strip().split()
                 counter.update(words)
         
         # Start with specials

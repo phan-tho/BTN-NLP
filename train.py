@@ -3,58 +3,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import math
 
 from Config import Config
 from Dataset import TranslationDataset
 from Transformer import ModernTransformer
-from utils import calc_accuracy, MetricLogger
-
-def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr=1e-6):
-    def lr_lambda(current_step):
-        if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
-        return max(min_lr, 0.5 * (1.0 + math.cos(math.pi * progress)))
-
-    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-def evaluate(model, dataloader, criterion, vocab_size, device, pad_id):
-    """
-    Runs validation on the test set. Returns average loss and accuracy.
-    """
-    model.eval()
-    total_loss = 0
-    total_correct = 0
-    total_tokens = 0
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            src = batch["src"].to(device)
-            tgt = batch["tgt"].to(device)
-            
-            tgt_input = tgt[:, :-1]
-            tgt_output = tgt[:, 1:]
-            
-            src_mask, tgt_mask = model.create_masks(src, tgt_input, pad_id, pad_id) # Using same pad_id for src/tgt as defined in dataset
-            
-            logits = model(src, tgt_input, src_mask, tgt_mask)
-            
-            # Reshape for loss and accuracy
-            flat_logits = logits.reshape(-1, vocab_size)
-            flat_targets = tgt_output.reshape(-1)
-            
-            loss = criterion(flat_logits, flat_targets)
-            total_loss += loss.item()
-            
-            # Calculate Accuracy
-            n_correct, n_total = calc_accuracy(flat_logits, flat_targets, pad_id)
-            total_correct += n_correct
-            total_tokens += n_total
-            
-    avg_loss = total_loss / len(dataloader)
-    avg_acc = total_correct / total_tokens if total_tokens > 0 else 0
-    return avg_loss, avg_acc
+from utils import calc_accuracy, MetricLogger, evaluate, get_cosine_schedule_with_warmup
 
 def train():
     cfg = Config()
@@ -95,6 +48,8 @@ def train():
             cfg.w2v_src_path, cfg.w2v_tgt_path,
             train_dataset.src_tokenizer, train_dataset.tgt_tokenizer
         )
+        model.freeze_embeddings()
+        print("Pretrained embeddings loaded and frozen.")
     except Exception as e:
         print(f"Warning: Could not load Word2Vec embeddings ({e}). Training from scratch.")
 
@@ -111,6 +66,9 @@ def train():
     
     # --- Training Loop ---
     for epoch in range(cfg.epochs):
+        if epoch == int(cfg.epochs * 0.3):
+            model.unfreeze_embeddings()
+            print("Unfroze embeddings for fine-tuning.")
         model.train()
         epoch_loss = 0
         epoch_correct = 0
@@ -153,24 +111,27 @@ def train():
         avg_train_acc = epoch_correct / epoch_tokens if epoch_tokens > 0 else 0
         
         # Validation
-        val_loss, val_acc = 0, 0
+        val_loss, val_acc, val_bleu = 0, 0, 0
         if test_dataloader:
-            val_loss, val_acc = evaluate(
+            # Pass the full vocab object (tgt_tokenizer) to evaluate for BLEU decoding
+            val_loss, val_acc, val_bleu = evaluate(
                 model, test_dataloader, criterion, 
-                cfg.vocab_size, cfg.device, train_dataset.tgt_pad_id
+                train_dataset.tgt_tokenizer, cfg.device
             )
         
         # Log to CSV and Console
-        logger.log(epoch+1, avg_train_loss, avg_train_acc, val_loss, val_acc)
+        logger.log(epoch+1, avg_train_loss, avg_train_acc, val_loss, val_acc, val_bleu)
         
+        # Save best model (using BLEU is often better for MT, but Acc is stable)
         if val_acc > best_acc:
             best_acc = val_acc
-            print(f"New best validation accuracy: {best_acc*100:.2f}% - saving model.")
+            print(f"New best validation accuracy: {best_acc*100:.2f}% (BLEU: {val_bleu:.2f}) - saving model.")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_train_loss,
+                'bleu': val_bleu
             }, cfg.model_save_path)
 
     print(f"Training complete. Logs saved to {cfg.log_file}")

@@ -19,10 +19,11 @@ class TranslationDataset(Dataset):
         self.tgt_tokenizer = SimpleVocab()
         self.tgt_tokenizer.load(tgt_vocab_path)
         
-        self.src_pad_id = self.src_tokenizer.pad_id
-        self.tgt_pad_id = self.tgt_tokenizer.pad_id
-        self.tgt_sos_id = self.tgt_tokenizer.sos_id
-        self.tgt_eos_id = self.tgt_tokenizer.eos_id
+        # Access dictionary directly to ensure we get integers, not methods
+        self.src_pad_id = self.src_tokenizer.word2idx.get("[PAD]", 0)
+        self.tgt_pad_id = self.tgt_tokenizer.word2idx.get("[PAD]", 0)
+        self.tgt_sos_id = self.tgt_tokenizer.word2idx.get("[SOS]", 1)
+        self.tgt_eos_id = self.tgt_tokenizer.word2idx.get("[EOS]", 2)
         
         self.max_len = max_len
 
@@ -56,5 +57,5 @@ class TranslationDataset(Dataset):
             "src_mask": torch.tensor(src_mask, dtype=torch.long).unsqueeze(0).unsqueeze(0), # (1, 1, seq_len) for broadcasting
             "tgt": torch.tensor(tgt_ids, dtype=torch.long),
             # For target mask we need causal masking later in model, here just padding mask
-            "tgt_pad_mask": (torch.tensor(tgt_ids) != self.tgt_pad_id).unsqueeze(0).unsqueeze(0)
+            "tgt_pad_mask": (torch.tensor(tgt_ids, dtype=torch.long) != self.tgt_pad_id).unsqueeze(0).unsqueeze(0)
         }

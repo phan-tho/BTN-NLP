@@ -209,23 +209,36 @@ class ModernTransformer(nn.Module):
         load_w2v(src_w2v_path, src_vocab, self.src_embed)
         load_w2v(tgt_w2v_path, tgt_vocab, self.tgt_embed)
 
-    def forward(self, src, tgt, src_mask, tgt_mask):
+    def freeze_embeddings(self):
+        self.src_embed.weight.requires_grad = False
+        self.tgt_embed.weight.requires_grad = False
+    def unfreeze_embeddings(self):
+        self.src_embed.weight.requires_grad = True
+        self.tgt_embed.weight.requires_grad = True
+
+    def encode(self, src, src_mask):
         # Load freqs to device
         freqs_cis = self.freqs_cis[:src.shape[1]].to(src.device)
-        freqs_tgt = self.freqs_cis[:tgt.shape[1]].to(tgt.device)
         
-        # Encoder
         enc_out = self.src_embed(src) * math.sqrt(self.d_model)
         for layer in self.encoder_layers:
             enc_out = layer(enc_out, freqs_cis, src_mask)
-            
-        # Decoder
+        return enc_out
+
+    def decode(self, tgt, enc_out, src_mask, tgt_mask):
+        # Load freqs to device
+        freqs_tgt = self.freqs_cis[:tgt.shape[1]].to(tgt.device)
+        
         dec_out = self.tgt_embed(tgt) * math.sqrt(self.d_model)
         for layer in self.decoder_layers:
             dec_out = layer(dec_out, enc_out, freqs_tgt, tgt_mask, src_mask)
             
         logits = self.fc_out(self.final_norm(dec_out))
         return logits
+
+    def forward(self, src, tgt, src_mask, tgt_mask):
+        enc_out = self.encode(src, src_mask)
+        return self.decode(tgt, enc_out, src_mask, tgt_mask)
 
     def create_masks(self, src, tgt, pad_idx_src, pad_idx_tgt):
         # Source mask (PAD mask)

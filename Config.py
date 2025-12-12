@@ -28,14 +28,16 @@ class Config:
     max_seq_len = 128  # IWSLT sentences are short
     
     # Training
-    batch_size = 64    # RTX 5060 should handle this easily with 512 dim
-    accum_iter = 1     # Gradient accumulation steps
+    batch_size = 64
     lr = 5e-4
     weight_decay = 0.01
     epochs = 20
     warmup_steps = 4000
     label_smoothing = 0.1
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Inference
+    beam_size = 4
     
     # Checkpointing
     model_save_path = 'transformer_en_vi.pth'

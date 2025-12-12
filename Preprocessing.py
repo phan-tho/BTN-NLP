@@ -6,7 +6,7 @@ import logging
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
-def train_tokenizer(files, vocab_path, min_freq=5):
+def build_vocab(files, vocab_path, min_freq=5):
     # files is a list, we take the first one for simplicity as per SimpleVocab design
     vocab = SimpleVocab()
     vocab.build(files[0], min_freq=min_freq)
@@ -51,8 +51,8 @@ if __name__ == "__main__":
         exit()
 
     # Note: vocab_size in Config is ignored here, size depends on min_freq
-    tok_en = train_tokenizer([cfg.train_src], cfg.vocab_src_path, min_freq=5)
-    tok_vi = train_tokenizer([cfg.train_tgt], cfg.vocab_tgt_path, min_freq=5)
+    tok_en = build_vocab([cfg.train_src], cfg.vocab_src_path, min_freq=5)
+    tok_vi = build_vocab([cfg.train_tgt], cfg.vocab_tgt_path, min_freq=5)
     
     # 2. Train Word2Vec on the tokens
     # We use d_model size so we can load it directly into the Transformer
