@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from gensim.models import Word2Vec
 
 # --- 1. RMSNorm (Pre-normalization preferred) ---
 class RMSNorm(nn.Module):
@@ -182,30 +181,28 @@ class ModernTransformer(nn.Module):
 
     def load_pretrained_embeddings(self, src_w2v_path, tgt_w2v_path, src_vocab, tgt_vocab):
         """
-        Loads Gensim Word2Vec weights into the Embedding layers.
-        Matches tokens from the SimpleVocab to the W2V vocab.
+        Loads PyTorch Skip-gram weights into the Embedding layers.
         """
         print("Loading Pretrained Embeddings...")
         
-        def load_w2v(path, vocab, embedding_layer):
-            w2v = Word2Vec.load(path)
-            hits = 0
-            misses = 0
-            vocab_dict = vocab.word2idx
-            
-            with torch.no_grad():
-                for token, idx in vocab_dict.items():
-                    if token in w2v.wv:
-                        vector = torch.from_numpy(w2v.wv[token]).float()
-                        if idx < embedding_layer.num_embeddings:
-                            embedding_layer.weight[idx] = vector
-                            hits += 1
-                    else:
-                        misses += 1
-            print(f"Loaded {path}: Hits={hits}, Misses={misses}")
+        def load_emb(path, embedding_layer):
+            try:
+                ckt = torch.load(path, map_location='cpu')
+                weights = ckt['weight']
 
-        load_w2v(src_w2v_path, src_vocab, self.src_embed)
-        load_w2v(tgt_w2v_path, tgt_vocab, self.tgt_embed)
+                # with torch.no_grad():
+                #     rows = min(weights.shape[0], embedding_layer.weight.shape[0])
+                #     cols = min(weights.shape[1], embedding_layer.weight.shape[1])
+                #     embedding_layer.weight[:rows, :cols] = weights[:rows, :cols]
+                with torch.no_grad():
+                    embedding_layer.weight = weights
+                    
+                print(f"Loaded embeddings from {path}")
+            except Exception as e:
+                print(f"Failed to load {path}: {e}")
+
+        load_emb(src_w2v_path, self.src_embed)
+        load_emb(tgt_w2v_path, self.tgt_embed)
 
     def freeze_embeddings(self):
         self.src_embed.weight.requires_grad = False
