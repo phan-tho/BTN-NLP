@@ -17,7 +17,7 @@ class Config:
     vocab_tgt_path = 'vocab_vi.json'
     w2v_src_path = 'w2v_en.model'
     w2v_tgt_path = 'w2v_vi.model'
-    vocab_size = 16000  # Smaller vocab for IWSLT is usually sufficient
+    # vocab_size = 16000  # Smaller vocab for IWSLT is usually sufficient
     
     # Model Architecture (Modern "Small" Config for IWSLT/Single GPU)
     d_model = 512

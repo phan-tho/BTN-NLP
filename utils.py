@@ -150,7 +150,7 @@ def compute_bleu(preds, targets, vocab):
     
     return bp * geo_mean * 100 # Return as percentage
 
-def evaluate(model, dataloader, criterion, vocab, device):
+def evaluate(model, dataloader, criterion, vocab, device):      # vocab is vocab of target language
     """
     Runs validation. Returns avg_loss, avg_acc, and bleu_score.
     """
@@ -165,7 +165,7 @@ def evaluate(model, dataloader, criterion, vocab, device):
     pad_id = vocab.pad_id
     sos_id = vocab.sos_id
     eos_id = vocab.eos_id
-    vocab_size = len(vocab)
+    tgt_vocab_size = len(vocab)
     
     with torch.no_grad():
         for batch in dataloader:
@@ -180,7 +180,7 @@ def evaluate(model, dataloader, criterion, vocab, device):
             # 1. Teacher Forcing for Loss & Accuracy
             logits = model(src, tgt_input, src_mask, tgt_mask)
             
-            flat_logits = logits.reshape(-1, vocab_size)
+            flat_logits = logits.reshape(-1, tgt_vocab_size)
             flat_targets = tgt_output.reshape(-1)
             
             loss = criterion(flat_logits, flat_targets)
@@ -190,7 +190,7 @@ def evaluate(model, dataloader, criterion, vocab, device):
             total_correct += n_correct
             total_tokens += n_total
             
-            # 2. Greedy Decoding for BLEU (Faster than Beam for validation)
+            # 2. Greedy Decoding for BLEU
             # We use the same src and src_mask
             # Max len can be heuristic, e.g., src_len + 50
             max_len = src.size(1) + 50

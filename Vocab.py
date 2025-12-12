@@ -57,7 +57,11 @@ class SimpleVocab:
     def __len__(self):
         return len(self.word2idx)
         
+    @property
     def pad_id(self): return self.word2idx["[PAD]"]
+    @property
     def unk_id(self): return self.word2idx["[UNK]"]
+    @property
     def sos_id(self): return self.word2idx["[SOS]"]
+    @property
     def eos_id(self): return self.word2idx["[EOS]"]

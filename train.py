@@ -22,10 +22,11 @@ def train():
     )
     train_dataloader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
     
-    # Update config vocab_size based on actual loaded vocab
-    # We take the max to ensure the embedding layer covers both source and target indices
-    cfg.vocab_size = max(len(train_dataset.src_tokenizer), len(train_dataset.tgt_tokenizer))
-    print(f"Vocab size updated to: {cfg.vocab_size}")
+    # Get actual vocab sizes from loaded vocabularies
+    src_vocab_size = len(train_dataset.src_tokenizer)
+    tgt_vocab_size = len(train_dataset.tgt_tokenizer)
+    print(f"Source vocab size: {src_vocab_size}")
+    print(f"Target vocab size: {tgt_vocab_size}")
 
     print("Loading Test Data...")
     # Ensure test files exist, otherwise warn
@@ -41,7 +42,7 @@ def train():
         test_dataloader = None
 
     # --- Model Init ---
-    model = ModernTransformer(cfg).to(cfg.device)
+    model = ModernTransformer(cfg, src_vocab_size, tgt_vocab_size).to(cfg.device)
     
     try:
         model.load_pretrained_embeddings(
@@ -87,7 +88,7 @@ def train():
             
             logits = model(src, tgt_input, src_mask, tgt_mask)
             
-            flat_logits = logits.reshape(-1, cfg.vocab_size)
+            flat_logits = logits.reshape(-1, tgt_vocab_size)
             flat_targets = tgt_output.reshape(-1)
             
             loss = criterion(flat_logits, flat_targets)

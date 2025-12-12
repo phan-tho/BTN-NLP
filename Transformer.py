@@ -159,14 +159,16 @@ class DecoderLayer(nn.Module):
 
 # --- 6. Main Model ---
 class ModernTransformer(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, src_vocab_size, tgt_vocab_size):
         super().__init__()
         self.d_model = cfg.d_model
         self.max_seq_len = cfg.max_seq_len
         
-        # Embeddings
-        self.src_embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.tgt_embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.src_vocab_size = src_vocab_size
+        self.tgt_vocab_size = tgt_vocab_size
+        
+        self.src_embed = nn.Embedding(self.src_vocab_size, cfg.d_model)
+        self.tgt_embed = nn.Embedding(self.tgt_vocab_size, cfg.d_model)
         
         # Precompute RoPE frequencies
         self.freqs_cis = precompute_freqs_cis(cfg.d_model // cfg.n_heads, cfg.max_seq_len * 2)
@@ -176,7 +178,7 @@ class ModernTransformer(nn.Module):
         self.decoder_layers = nn.ModuleList([DecoderLayer(cfg) for _ in range(cfg.n_layers)])
         
         self.final_norm = RMSNorm(cfg.d_model)
-        self.fc_out = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
+        self.fc_out = nn.Linear(cfg.d_model, self.tgt_vocab_size, bias=False)
 
     def load_pretrained_embeddings(self, src_w2v_path, tgt_w2v_path, src_vocab, tgt_vocab):
         """
@@ -189,22 +191,18 @@ class ModernTransformer(nn.Module):
             w2v = Word2Vec.load(path)
             hits = 0
             misses = 0
-            
-            # Iterate over our vocab
-            # vocab is a SimpleVocab object
             vocab_dict = vocab.word2idx
             
             with torch.no_grad():
                 for token, idx in vocab_dict.items():
                     if token in w2v.wv:
-                        vector = torch.from_numpy(w2v.wv[token])
-                        # Ensure we don't go out of bounds if vocab grew larger than initialized embedding
+                        vector = torch.from_numpy(w2v.wv[token]).float()
                         if idx < embedding_layer.num_embeddings:
                             embedding_layer.weight[idx] = vector
                             hits += 1
                     else:
                         misses += 1
-            print(f"Loaded {path}: Hits={hits}, Misses={misses} (Misses are initialized randomly)")
+            print(f"Loaded {path}: Hits={hits}, Misses={misses}")
 
         load_w2v(src_w2v_path, src_vocab, self.src_embed)
         load_w2v(tgt_w2v_path, tgt_vocab, self.tgt_embed)
@@ -241,7 +239,11 @@ class ModernTransformer(nn.Module):
         return self.decode(tgt, enc_out, src_mask, tgt_mask)
 
     def create_masks(self, src, tgt, pad_idx_src, pad_idx_tgt):
+        # src shape: (B, Src_Seq)
+        # tgt shape: (B, Tgt_Seq)
+
         # Source mask (PAD mask)
+        
         src_mask = (src != pad_idx_src).unsqueeze(1).unsqueeze(2) # (B, 1, 1, Seq)
         
         # Target mask (Causal + PAD)
