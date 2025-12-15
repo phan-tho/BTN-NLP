@@ -3,7 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-# --- 1. RMSNorm (Pre-normalization preferred) ---
+# --- 1. RMSNorm---
+# Impact: RMSNorm simplifies LayerNorm by removing mean centering. 
+# It is computationally cheaper and often leads to better training stability and convergence.
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -16,27 +18,24 @@ class RMSNorm(nn.Module):
     def forward(self, x):
         return self._norm(x.float()).type_as(x) * self.weight
 
-# --- 2. Rotary Positional Embeddings (RoPE) ---
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    t = torch.arange(end, device=freqs.device)  # type: ignore
-    freqs = torch.outer(t, freqs).float()  # type: ignore
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-    return freqs_cis
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
 
-def apply_rotary_emb(xq, xk, freqs_cis):
-    # xq shape: (batch, seq_len, n_heads, head_dim) -> reshape to pairs for complex
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    
-    # Reshape freqs for broadcasting (1, seq_len, 1, head_dim/2)
-    freqs_cis = freqs_cis.view(1, xq.size(1), 1, xq_.size(-1))
-    
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    return xq_out.type_as(xq), xk_out.type_as(xk)
+    def forward(self, x):
+        # x: (Batch, Seq, Dim)
+        return x + self.pe[:, :x.size(1)]
 
 # --- 3. SwiGLU Feed Forward ---
+# Impact: Replaces the standard ReLU/GELU Feed Forward Network.
+# SwiGLU (Swish-Gated Linear Unit) has been shown to offer better performance 
+# and learning capacity than standard FFNs in LLMs (e.g., LLaMA, PaLM).
 class SwiGLU(nn.Module):
     def __init__(self, dim, hidden_dim, dropout=0.1):
         super().__init__()
@@ -49,8 +48,8 @@ class SwiGLU(nn.Module):
         # F.silu is Swish
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
-# --- 4. Attention (with RoPE) ---
-class ModernAttention(nn.Module):
+# --- 4. Attention (Standard Scaled Dot-Product) ---
+class MultiHeadAttention(nn.Module):
     def __init__(self, dim, n_heads, dropout=0.1):
         super().__init__()
         self.n_heads = n_heads
@@ -63,7 +62,7 @@ class ModernAttention(nn.Module):
         self.wo = nn.Linear(dim, dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, freqs_cis, mask=None, kv_x=None):
+    def forward(self, x, mask=None, kv_x=None):
         # kv_x is for cross-attention (encoder output)
         B, Seq, _ = x.shape
         
@@ -73,16 +72,11 @@ class ModernAttention(nn.Module):
             # Self Attention
             xk = self.wk(x).view(B, Seq, self.n_heads, self.head_dim)
             xv = self.wv(x).view(B, Seq, self.n_heads, self.head_dim)
-            # Apply RoPE only for self-attention queries and keys
-            xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
         else:
-            # Cross Attention (No RoPE usually on Cross Attn, or only on Query)
-            # Standard practice: No positional encoding on Cross Attn Keys/Values derived from Encoder
+            # Cross Attention
             B_kv, Seq_kv, _ = kv_x.shape
             xk = self.wk(kv_x).view(B_kv, Seq_kv, self.n_heads, self.head_dim)
             xv = self.wv(kv_x).view(B_kv, Seq_kv, self.n_heads, self.head_dim)
-            # We don't apply RoPE to cross attention in standard transformer recipes usually,
-            # as position info is already in the encoder states.
 
         # Transpose for dot prod: (B, n_heads, Seq, head_dim)
         xq = xq.transpose(1, 2)
@@ -107,15 +101,15 @@ class EncoderLayer(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.norm1 = RMSNorm(cfg.d_model)
-        self.attn = ModernAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
+        self.attn = MultiHeadAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
         self.norm2 = RMSNorm(cfg.d_model)
         self.ffn = SwiGLU(cfg.d_model, cfg.d_ff, cfg.dropout)
 
-    def forward(self, x, freqs_cis, mask):
+    def forward(self, x, mask):
         # Pre-Norm
         h = x
         x = self.norm1(x)
-        x = self.attn(x, freqs_cis, mask)
+        x = self.attn(x, mask=mask)
         x = h + x # Residual
         
         h = x
@@ -128,25 +122,25 @@ class DecoderLayer(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.norm1 = RMSNorm(cfg.d_model)
-        self.self_attn = ModernAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
+        self.self_attn = MultiHeadAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
         
         self.norm2 = RMSNorm(cfg.d_model)
-        self.cross_attn = ModernAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
+        self.cross_attn = MultiHeadAttention(cfg.d_model, cfg.n_heads, cfg.dropout)
         
         self.norm3 = RMSNorm(cfg.d_model)
         self.ffn = SwiGLU(cfg.d_model, cfg.d_ff, cfg.dropout)
 
-    def forward(self, x, enc_out, freqs_cis, tgt_mask, src_mask):
+    def forward(self, x, enc_out, tgt_mask, src_mask):
         # 1. Self Attention
         h = x
         x = self.norm1(x)
-        x = self.self_attn(x, freqs_cis, tgt_mask)
+        x = self.self_attn(x, mask=tgt_mask)
         x = h + x
         
         # 2. Cross Attention
         h = x
         x = self.norm2(x)
-        x = self.cross_attn(x, freqs_cis=None, mask=src_mask, kv_x=enc_out)
+        x = self.cross_attn(x, mask=src_mask, kv_x=enc_out)
         x = h + x
         
         # 3. FFN
@@ -169,8 +163,8 @@ class ModernTransformer(nn.Module):
         self.src_embed = nn.Embedding(self.src_vocab_size, cfg.d_model)
         self.tgt_embed = nn.Embedding(self.tgt_vocab_size, cfg.d_model)
         
-        # Precompute RoPE frequencies
-        self.freqs_cis = precompute_freqs_cis(cfg.d_model // cfg.n_heads, cfg.max_seq_len * 2)
+        # Standard Positional Encoding
+        self.pos_encoder = PositionalEncoding(cfg.d_model, cfg.max_seq_len)
         
         # Layers
         self.encoder_layers = nn.ModuleList([EncoderLayer(cfg) for _ in range(cfg.n_layers)])
@@ -178,6 +172,7 @@ class ModernTransformer(nn.Module):
         
         self.final_norm = RMSNorm(cfg.d_model)
         self.fc_out = nn.Linear(cfg.d_model, self.tgt_vocab_size, bias=False)
+        self.dropout = nn.Dropout(cfg.dropout)
 
     def load_pretrained_embeddings(self, src_w2v_path, tgt_w2v_path, src_vocab, tgt_vocab):
         """
@@ -212,23 +207,25 @@ class ModernTransformer(nn.Module):
         self.tgt_embed.weight.requires_grad = True
 
     def encode(self, src, src_mask):
-        # Load freqs to device
-        freqs_cis = self.freqs_cis[:src.shape[1]].to(src.device)
+        # Apply embedding + pos encoding
+        x = self.src_embed(src) * math.sqrt(self.d_model)
+        x = self.pos_encoder(x)
+        x = self.dropout(x)
         
-        enc_out = self.src_embed(src) * math.sqrt(self.d_model)
         for layer in self.encoder_layers:
-            enc_out = layer(enc_out, freqs_cis, src_mask)
-        return enc_out
+            x = layer(x, src_mask)
+        return x
 
     def decode(self, tgt, enc_out, src_mask, tgt_mask):
-        # Load freqs to device
-        freqs_tgt = self.freqs_cis[:tgt.shape[1]].to(tgt.device)
+        # Apply embedding + pos encoding
+        x = self.tgt_embed(tgt) * math.sqrt(self.d_model)
+        x = self.pos_encoder(x)
+        x = self.dropout(x)
         
-        dec_out = self.tgt_embed(tgt) * math.sqrt(self.d_model)
         for layer in self.decoder_layers:
-            dec_out = layer(dec_out, enc_out, freqs_tgt, tgt_mask, src_mask)
+            x = layer(x, enc_out, tgt_mask, src_mask)
             
-        logits = self.fc_out(self.final_norm(dec_out))
+        logits = self.fc_out(self.final_norm(x))
         return logits
 
     def forward(self, src, tgt, src_mask, tgt_mask):

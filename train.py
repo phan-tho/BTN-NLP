@@ -43,6 +43,9 @@ def train():
 
     # --- Model Init ---
     model = ModernTransformer(cfg, src_vocab_size, tgt_vocab_size).to(cfg.device)
+    # cnt parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model initialized with {total_params} trainable parameters.")
     
     try:
         model.load_pretrained_embeddings(
